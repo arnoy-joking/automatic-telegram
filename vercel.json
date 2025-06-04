@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/subtitles.py",
+      "use": "@vercel/python",
+      "config": { 
+        "maxLambdaSize": "50mb",
+        "includeFiles": ["api/yt-dlp"]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/subtitles",
+      "dest": "api/subtitles.py"
+    }
+  ]
+}
