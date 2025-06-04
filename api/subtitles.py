@@ -2,98 +2,79 @@ import os
 import tempfile
 import subprocess
 import json
-from flask import Flask, request, jsonify
+from http.server import BaseHTTPRequestHandler
+from io import BytesIO
 
-app = Flask(__name__)
-
-# Path to the bundled yt-dlp binary
 YT_DLP_PATH = os.path.join(os.path.dirname(__file__), 'yt-dlp')
 
-@app.route('/api/subtitles', methods=['GET'])
-def get_subtitles():
-    video_url = request.args.get('url')
-    if not video_url:
-        return jsonify({'error': 'URL parameter is required'}), 400
-
+def handle_subtitles(video_url):
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Prepare command
             cmd = [
                 YT_DLP_PATH,
                 '--skip-download',
                 '--write-subs',
                 '--write-auto-subs',
                 '--sub-lang', 'en',
-                '--sub-format', 'json',  # Using JSON format for easier parsing
+                '--sub-format', 'json',
                 '--convert-subs', 'json',
                 '--output', f'{tmp_dir}/subtitle',
                 '--no-warnings',
                 video_url
             ]
 
-            # Execute yt-dlp
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=20
             )
 
             if result.returncode != 0:
-                return jsonify({
-                    'error': 'Failed to extract subtitles',
-                    'details': result.stderr
-                }), 500
+                return {
+                    'statusCode': 500,
+                    'body': json.dumps({
+                        'error': 'Failed to extract subtitles',
+                        'details': result.stderr
+                    })
+                }
 
-            # Find the subtitle file
-            subtitle_file = None
             for f in os.listdir(tmp_dir):
                 if f.endswith('.json'):
-                    subtitle_file = os.path.join(tmp_dir, f)
-                    break
+                    with open(os.path.join(tmp_dir, f), 'r') as sub_file:
+                        subtitles = json.load(sub_file)
+                        formatted = '\n'.join([entry['text'] for entry in subtitles])
+                        return {
+                            'statusCode': 200,
+                            'body': json.dumps({
+                                'subtitles': formatted,
+                                'raw': subtitles
+                            })
+                        }
 
-            if not subtitle_file:
-                return jsonify({'error': 'No subtitles found'}), 404
-
-            # Read and process subtitles
-            with open(subtitle_file, 'r') as f:
-                subtitles = json.load(f)
-                formatted = '\n'.join([entry['text'] for entry in subtitles])
-
-            return jsonify({
-                'subtitles': formatted,
-                'raw': subtitles
-            })
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': 'No subtitles found'})
+            }
 
     except subprocess.TimeoutExpired:
-        return jsonify({'error': 'Processing timed out'}), 504
+        return {
+            'statusCode': 504,
+            'body': json.dumps({'error': 'Processing timed out'})
+        }
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
 
-# Vercel handler
-def handler(request):
-    from io import BytesIO
-    environ = {
-        'REQUEST_METHOD': request.method,
-        'PATH_INFO': request.path,
-        'QUERY_STRING': request.query_string.decode(),
-        'wsgi.input': BytesIO(),
-        'wsgi.errors': BytesIO(),
-        'wsgi.version': (1, 0),
-        'wsgi.url_scheme': 'https'
-    }
+def handler(request, context):
+    video_url = request.get('queryStringParameters', {}).get('url')
     
-    headers = []
-    
-    def start_response(status, response_headers):
-        nonlocal headers
-        headers = response_headers
-        return BytesIO().write
-    
-    response = app(environ, start_response)
-    
-    return {
-        'statusCode': 200,
-        'headers': dict(headers),
-        'body': b''.join(response).decode()
-    }
+    if not video_url:
+        return {
+            'statusCode': 400,
+            'body': json.dumps({'error': 'URL parameter is required'})
+        }
+
+    return handle_subtitles(video_url)
